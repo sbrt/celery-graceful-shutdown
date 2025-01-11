@@ -1,0 +1,86 @@
+#version: '3.8'
+
+services:
+  # rabbitmq:
+  #   image: "rabbitmq:3-management"
+  #   container_name: rabbitmq
+  #   ports:
+  #     - "15672:15672"  # RabbitMQ Management Console
+  #     - "5672:5672"    # RabbitMQ Default Port
+  #   environment:
+  #     - RABBITMQ_DEFAULT_USER=user
+  #     - RABBITMQ_DEFAULT_PASS=password
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    networks:
+      - celery_network
+    # for debugging: no anonymous volumes with snapshots, so no tasks restored when docker up --force-recreate
+    #command: ["redis-server", "*:6379", "--save", "''", "--appendonly", "no"]
+    # extra save AOF
+    command: ["redis-server", "*:6379", "--appendonly", "yes"]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      retries: 3
+      timeout: 10s
+      start_period: 0s
+      disable: false
+
+  flask:
+    build:
+      context: ./app
+    container_name: flask
+    ports:
+      - "8000:8000"
+    environment:
+      #- CELERY_BROKER_URL=pyamqp://user:password@rabbitmq//  # Same RabbitMQ connection string
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - celery_network
+    healthcheck:
+      test: ["CMD", "curl", "http://localhost:8000/health"]
+      interval: 3s
+      retries: 3
+      timeout: 10s
+      start_period: 0s
+      disable: false
+
+  celery_worker:
+    build:
+      context: ./celery_worker
+    container_name: celery_worker
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    environment:
+      #- CELERY_BROKER_URL=pyamqp://user:password@rabbitmq//  # Same RabbitMQ connection string
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERY_STOP_GRACE_PERIOD=120
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - celery_network
+    healthcheck:
+      test: ["CMD-SHELL", "celery inspect ping --destination celery@$$HOSTNAME"]
+      interval: 3s
+      retries: 3
+      timeout: 10s
+      start_period: 0s
+      disable: false
+
+networks:
+  celery_network:
+    driver: bridge
